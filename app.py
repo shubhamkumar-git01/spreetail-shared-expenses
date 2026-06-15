@@ -572,10 +572,402 @@ def import_csv_data(filepath):
     
     return imported_count, anomalies_detected
 
-
-# Placeholder for calculations
+# Debt Simplification Engine
 def calculate_net_balances():
-    return {'balances': [], 'debts': [], 'ledgers': {}}
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id, name FROM users")
+    users = cursor.fetchall()
+    user_map = {u['id']: u['name'] for u in users}
+    
+    credits = {uid: 0.0 for uid in user_map.keys()}
+    debits = {uid: 0.0 for uid in user_map.keys()}
+    
+    cursor.execute("""
+    SELECT id, paid_by_id, amount, currency, is_settlement, description FROM expenses 
+    WHERE status = 'active'
+    """)
+    expenses = cursor.fetchall()
+    
+    for exp in expenses:
+        exp_id = exp['id']
+        payer_id = exp['paid_by_id']
+        is_settlement = exp['is_settlement']
+        amount = exp['amount']
+        currency = exp['currency']
+        
+        amount_inr = amount * (USD_TO_INR if currency == 'USD' else 1.0)
+        
+        cursor.execute("SELECT user_id, calculated_amount_inr FROM expense_splits WHERE expense_id = ?", (exp_id,))
+        splits = cursor.fetchall()
+        
+        if is_settlement:
+            if payer_id:
+                credits[payer_id] += amount_inr
+            for s in splits:
+                debits[s['user_id']] += s['calculated_amount_inr']
+        else:
+            if payer_id:
+                credits[payer_id] += amount_inr
+            for s in splits:
+                debits[s['user_id']] += s['calculated_amount_inr']
+                
+    net_balances = {}
+    for uid in user_map.keys():
+        net_balances[uid] = credits[uid] - debits[uid]
+        
+    debtors = []
+    creditors = []
+    
+    for uid, bal in net_balances.items():
+        if bal < -0.01:
+            debtors.append({'id': uid, 'name': user_map[uid], 'balance': -bal})
+        elif bal > 0.01:
+            creditors.append({'id': uid, 'name': user_map[uid], 'balance': bal})
+            
+    debtors.sort(key=lambda x: x['balance'], reverse=True)
+    creditors.sort(key=lambda x: x['balance'], reverse=True)
+    
+    simplified_debts = []
+    d_idx = 0
+    c_idx = 0
+    
+    while d_idx < len(debtors) and c_idx < len(creditors):
+        db = debtors[d_idx]
+        cr = creditors[c_idx]
+        
+        amount_to_settle = min(db['balance'], cr['balance'])
+        
+        if amount_to_settle > 0.01:
+            simplified_debts.append({
+                'debtor_id': db['id'],
+                'debtor_name': db['name'],
+                'creditor_id': cr['id'],
+                'creditor_name': cr['name'],
+                'amount': round(amount_to_settle, 2)
+            })
+            
+        db['balance'] -= amount_to_settle
+        cr['balance'] -= amount_to_settle
+        
+        if db['balance'] < 0.01:
+            d_idx += 1
+        if cr['balance'] < 0.01:
+            c_idx += 1
+            
+    # Compile detailed breakdown ledger
+    detailed_ledger = {}
+    for uid, name in user_map.items():
+        ledger = []
+        cursor.execute("""
+        SELECT e.id, e.description, e.date, e.amount, e.currency, e.paid_by_id, e.is_settlement, s.calculated_amount_inr
+        FROM expenses e
+        JOIN expense_splits s ON e.id = s.expense_id
+        WHERE s.user_id = ? AND e.status = 'active'
+        """, (uid,))
+        user_splits = cursor.fetchall()
+        
+        cursor.execute("""
+        SELECT id, description, date, amount, currency, is_settlement FROM expenses
+        WHERE paid_by_id = ? AND status = 'active'
+        """, (uid,))
+        user_payments = cursor.fetchall()
+        
+        for s in user_splits:
+            payer_name = user_map.get(s['paid_by_id'], 'Unassigned')
+            amount_inr = s['calculated_amount_inr']
+            
+            if s['paid_by_id'] == uid:
+                if not s['is_settlement']:
+                    ledger.append({
+                        'expense_id': s['id'],
+                        'date': s['date'],
+                        'description': f"{s['description']} (Your Share)",
+                        'payer': 'You',
+                        'total_amount': s['amount'],
+                        'currency': s['currency'],
+                        'your_share': amount_inr,
+                        'effect': -amount_inr,
+                        'type': 'share'
+                    })
+            else:
+                desc = s['description']
+                if s['is_settlement']:
+                    desc = f"Received settlement from {payer_name}"
+                ledger.append({
+                    'expense_id': s['id'],
+                    'date': s['date'],
+                    'description': desc,
+                    'payer': payer_name,
+                    'total_amount': s['amount'],
+                    'currency': s['currency'],
+                    'your_share': amount_inr,
+                    'effect': -amount_inr,
+                    'type': 'split'
+                })
+                
+        for p in user_payments:
+            p_id = p['id']
+            amount_inr = p['amount'] * (USD_TO_INR if p['currency'] == 'USD' else 1.0)
+            
+            if p['is_settlement']:
+                cursor.execute("""
+                SELECT u.name FROM expense_splits s 
+                JOIN users u ON s.user_id = u.id 
+                WHERE s.expense_id = ?
+                """, (p_id,))
+                recip_res = cursor.fetchone()
+                recip_name = recip_res[0] if recip_res else 'Someone'
+                ledger.append({
+                    'expense_id': p_id,
+                    'date': p['date'],
+                    'description': f"Settle payment to {recip_name}",
+                    'payer': 'You',
+                    'total_amount': p['amount'],
+                    'currency': p['currency'],
+                    'your_share': 0.0,
+                    'effect': amount_inr,
+                    'type': 'settlement_paid'
+                })
+            else:
+                ledger.append({
+                    'expense_id': p_id,
+                    'date': p['date'],
+                    'description': f"Paid for: {p['description']}",
+                    'payer': 'You',
+                    'total_amount': p['amount'],
+                    'currency': p['currency'],
+                    'your_share': 0.0,
+                    'effect': amount_inr,
+                    'type': 'payment'
+                })
+                
+        ledger.sort(key=lambda x: x['date'])
+        calculated_sum = sum(item['effect'] for item in ledger)
+        detailed_ledger[name] = {
+            'ledger': ledger,
+            'net_balance': round(net_balances[uid], 2),
+            'calculated_sum': round(calculated_sum, 2)
+        }
+        
+    conn.close()
+    
+    balances_summary = []
+    for uid, name in user_map.items():
+        balances_summary.append({
+            'user_id': uid,
+            'name': name,
+            'net_balance': round(net_balances[uid], 2)
+        })
+        
+    return {
+        'balances': balances_summary,
+        'debts': simplified_debts,
+        'ledgers': detailed_ledger
+    }
+
+# API: GET /api/data
+@app.route('/api/data', methods=['GET'])
+def get_data():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+    SELECT e.id, e.description, e.amount, e.currency, e.date, e.split_type, e.notes, e.status, e.is_settlement, u.name as paid_by
+    FROM expenses e
+    LEFT JOIN users u ON e.paid_by_id = u.id
+    ORDER BY e.date DESC
+    """)
+    expenses = [dict(row) for row in cursor.fetchall()]
+    
+    cursor.execute("""
+    SELECT m.id, u.name, m.joined_date, m.left_date 
+    FROM group_memberships m
+    JOIN users u ON m.user_id = u.id
+    """)
+    members = [dict(row) for row in cursor.fetchall()]
+    
+    cursor.execute("SELECT * FROM anomalies ORDER BY row_index ASC")
+    anomalies = [dict(row) for row in cursor.fetchall()]
+    
+    calc_res = calculate_net_balances()
+    conn.close()
+    
+    return jsonify({
+        'expenses': expenses,
+        'members': members,
+        'anomalies': anomalies,
+        'balances': calc_res['balances'],
+        'debts': calc_res['debts'],
+        'ledgers': calc_res['ledgers']
+    })
+
+# API: POST /api/import
+@app.route('/api/import', methods=['POST'])
+def import_csv():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part in the request'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+        
+    filepath = os.path.join(app.root_path, 'expenses_export.csv')
+    file.save(filepath)
+    
+    try:
+        count, anomalies = import_csv_data(filepath)
+        return jsonify({
+            'success': True,
+            'message': f"Imported {count} records successfully.",
+            'anomalies': anomalies
+        })
+    except Exception as e:
+        return jsonify({'error': f"Failed to import CSV: {str(e)}"}), 500
+
+# API: POST /api/resolve-anomaly
+@app.route('/api/resolve-anomaly', methods=['POST'])
+def resolve_anomaly():
+    data = request.json
+    anomaly_id = data.get('anomaly_id')
+    action = data.get('action')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM anomalies WHERE id = ?", (anomaly_id,))
+    anomaly = cursor.fetchone()
+    if not anomaly:
+        conn.close()
+        return jsonify({'error': 'Anomaly not found'}), 404
+        
+    row_idx = anomaly['row_index']
+    
+    if action == 'approve_delete':
+        cursor.execute("UPDATE expenses SET status = 'deleted' WHERE source_row = ?", (row_idx,))
+        cursor.execute("UPDATE anomalies SET status = 'resolved' WHERE id = ?", (anomaly_id,))
+    elif action == 'keep_both':
+        cursor.execute("UPDATE expenses SET status = 'active' WHERE source_row = ?", (row_idx,))
+        cursor.execute("UPDATE anomalies SET status = 'resolved' WHERE id = ?", (anomaly_id,))
+    elif action == 'assign_payer':
+        payer_name = data.get('payer_name')
+        cursor.execute("SELECT id FROM users WHERE name = ?", (payer_name,))
+        payer_res = cursor.fetchone()
+        if payer_res:
+            payer_id = payer_res[0]
+            cursor.execute("UPDATE expenses SET paid_by_id = ? WHERE source_row = ?", (payer_id, row_idx))
+            cursor.execute("UPDATE anomalies SET status = 'resolved' WHERE id = ?", (anomaly_id,))
+    elif action == 'resolve_conflict':
+        winner_row = data.get('winner_row_idx')
+        loser_row = data.get('loser_row_idx')
+        cursor.execute("UPDATE expenses SET status = 'active' WHERE source_row = ?", (winner_row,))
+        cursor.execute("UPDATE expenses SET status = 'deleted' WHERE source_row = ?", (loser_row,))
+        cursor.execute("UPDATE anomalies SET status = 'resolved' WHERE row_index IN (?, ?)", (winner_row, loser_row))
+        
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'success': True})
+
+# API: POST /api/expenses
+@app.route('/api/expenses', methods=['POST'])
+def add_expense():
+    data = request.json
+    desc = data.get('description')
+    paid_by = data.get('paid_by')
+    amount = float(data.get('amount'))
+    currency = data.get('currency', 'INR')
+    date_str = data.get('date')
+    split_type = data.get('split_type', 'equal')
+    participants = data.get('participants', [])
+    split_details = data.get('split_details', {})
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id FROM groups LIMIT 1")
+    group_id = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT id FROM users WHERE name = ?", (paid_by,))
+    paid_by_id = cursor.fetchone()[0]
+    
+    cursor.execute("""
+    INSERT INTO expenses (group_id, description, paid_by_id, amount, currency, date, split_type, notes, is_settlement, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    """, (group_id, desc, paid_by_id, amount, currency, date_str, split_type, '', 0))
+    
+    expense_id = cursor.lastrowid
+    amount_inr = amount * (USD_TO_INR if currency == 'USD' else 1.0)
+    
+    splits = {}
+    num_part = len(participants)
+    if num_part > 0:
+        if split_type == 'equal':
+            share = amount_inr / num_part
+            for p in participants:
+                cursor.execute("SELECT id FROM users WHERE name = ?", (p,))
+                u_id = cursor.fetchone()[0]
+                splits[u_id] = share
+        elif split_type == 'percentage':
+            for p in participants:
+                cursor.execute("SELECT id FROM users WHERE name = ?", (p,))
+                u_id = cursor.fetchone()[0]
+                pct = float(split_details.get(p, 100.0 / num_part))
+                splits[u_id] = amount_inr * (pct / 100.0)
+        elif split_type == 'share':
+            total_shares = sum(float(split_details.get(p, 1.0)) for p in participants)
+            for p in participants:
+                cursor.execute("SELECT id FROM users WHERE name = ?", (p,))
+                u_id = cursor.fetchone()[0]
+                shares = float(split_details.get(p, 1.0))
+                splits[u_id] = amount_inr * (shares / total_shares)
+                
+    for u_id, val_inr in splits.items():
+        cursor.execute("""
+        INSERT INTO expense_splits (expense_id, user_id, split_value, calculated_amount_inr)
+        VALUES (?, ?, ?, ?)
+        """, (expense_id, u_id, val_inr, val_inr))
+        
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+# API: POST /api/settle
+@app.route('/api/settle', methods=['POST'])
+def settle_payment():
+    data = request.json
+    debtor = data.get('debtor_name')
+    creditor = data.get('creditor_name')
+    amount = float(data.get('amount'))
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id FROM groups LIMIT 1")
+    group_id = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT id FROM users WHERE name = ?", (debtor,))
+    debtor_id = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT id FROM users WHERE name = ?", (creditor,))
+    creditor_id = cursor.fetchone()[0]
+    
+    cursor.execute("""
+    INSERT INTO expenses (group_id, description, paid_by_id, amount, currency, date, split_type, notes, is_settlement, status)
+    VALUES (?, ?, ?, ?, 'INR', ?, 'settlement', '', 1, 'active')
+    """, (group_id, f"Settlement: {debtor} paid {creditor}", debtor_id, amount, date_str))
+    
+    expense_id = cursor.lastrowid
+    
+    cursor.execute("""
+    INSERT INTO expense_splits (expense_id, user_id, split_value, calculated_amount_inr)
+    VALUES (?, ?, ?, ?)
+    """, (expense_id, creditor_id, amount, amount))
+    
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
 
 @app.route('/')
 def index():
