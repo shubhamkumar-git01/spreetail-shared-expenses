@@ -1,0 +1,116 @@
+[
+  {
+    "row": 6,
+    "description": "dinner - marina bites",
+    "anomaly": "Duplicate entry of row 5: 'dinner - marina bites'",
+    "action": "pending_approval_to_delete"
+  },
+  {
+    "row": 7,
+    "description": "Electricity Feb",
+    "anomaly": "Amount formatting cleaned: '1,200' -> '1200'",
+    "action": "re-formatted"
+  },
+  {
+    "row": 9,
+    "description": "Movie night snacks",
+    "anomaly": "Payer name 'priya' normalized to 'Priya'",
+    "action": "normalized"
+  },
+  {
+    "row": 10,
+    "description": "Cylinder refill",
+    "anomaly": "Precision decimal amount '899.995' imported exactly",
+    "action": "preserved_float"
+  },
+  {
+    "row": 11,
+    "description": "Groceries DMart",
+    "anomaly": "Payer name 'Priya S' normalized to 'Priya'",
+    "action": "normalized"
+  },
+  {
+    "row": 13,
+    "description": "House cleaning supplies",
+    "anomaly": "Missing payer for shared expense. Marked as unassigned.",
+    "action": "pending_resolution"
+  },
+  {
+    "row": 14,
+    "description": "Rohan paid Aisha back",
+    "anomaly": "Settlement transaction logged as expense: 'Rohan paid Aisha back'",
+    "action": "converted_to_settlement"
+  },
+  {
+    "row": 15,
+    "description": "Pizza Friday",
+    "anomaly": "Percentages sum to 110.0% instead of 100%. Re-scaled to 100%.",
+    "action": "auto-normalized"
+  },
+  {
+    "row": 23,
+    "description": "Parasailing",
+    "anomaly": "External guest 'Dev's friend Kabir' included in split. Dev absorbs this share.",
+    "action": "merged_into_payer"
+  },
+  {
+    "row": 25,
+    "description": "Thalassa dinner",
+    "anomaly": "Conflicting entry with row 24 for Thalassa dinner",
+    "action": "marked_pending_resolution"
+  },
+  {
+    "row": 26,
+    "description": "Parasailing refund",
+    "anomaly": "Negative expense amount -30.0 treated as a refund",
+    "action": "processed_as_refund"
+  },
+  {
+    "row": 27,
+    "description": "Airport cab",
+    "anomaly": "Payer name 'rohan' normalized to 'Rohan'",
+    "action": "normalized"
+  },
+  {
+    "row": 27,
+    "description": "Airport cab",
+    "anomaly": "Inconsistent date format (Mar-14 normalized to 2026-03-14)",
+    "action": "normalized"
+  },
+  {
+    "row": 28,
+    "description": "Groceries DMart",
+    "anomaly": "Missing currency: defaulted to 'INR'",
+    "action": "defaulted_to_inr"
+  },
+  {
+    "row": 31,
+    "description": "Dinner order Swiggy",
+    "anomaly": "Zero-value expense ignored in balance calculations",
+    "action": "flagged"
+  },
+  {
+    "row": 32,
+    "description": "Weekend brunch",
+    "anomaly": "Percentages sum to 110.0% instead of 100%. Re-scaled to 100%.",
+    "action": "auto-normalized"
+  },
+  {
+    "row": 34,
+    "description": "Deep cleaning service",
+    "anomaly": "Ambiguous date 04-05-2026 resolved to 2026-04-05 (April 5) based on active members in the split list",
+    "action": "resolved_ambiguity"
+  },
+  {
+    "row": 36,
+    "description": "Groceries BigBasket",
+    "anomaly": "Participant 'Meera' was inactive on 2026-04-02 (moved out or not joined yet). Removed from split.",
+    "action": "removed_from_split"
+  },
+  {
+    "row": 42,
+    "description": "Furniture for common room",
+    "anomaly": "Equal split type had split details provided. Ignored details, split equally.",
+    "action": "ignored_details"
+  }
+]
